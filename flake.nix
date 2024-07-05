@@ -19,6 +19,7 @@
             RUST_SRC_PATH = rustPlatform.rustLibSrc;
 
             shellHook = ''
+              export CARGO_HOME=~/.local/share/cargo
               export RUSTUP_HOME=~/.local/share/rustup
               export PATH=$PATH:$RUSTUP_HOME/toolchains/stable-x86_64-w64-unknown-linux-gnu/bin/
               rustup default stable

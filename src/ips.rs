@@ -1,23 +1,41 @@
 use std::{
     fmt::Display,
-    fs::File,
-    io::Read,
-    path::{Path, PathBuf},
+    fs::{self, File},
+    io::{Read, Seek, SeekFrom},
+    os::unix::fs::FileExt,
+    path::{self, Path, PathBuf},
 };
 
-static IPS_HEADER: &str = "PATCH";
-static IPS_EOF: &str = "EOF";
+trait IpsCommonOperations {
+    fn check_file_size(mut f: &File, max_size: u64) {
+        if f.seek(SeekFrom::End(0))
+            .is_ok_and(|filesize| filesize >= max_size)
+        {
+            panic!("Patch must be smaller than {max_size}.")
+        } else {
+            let _ = f.seek(SeekFrom::Start(0));
+        }
+    }
+}
 
 pub struct IPSReader {
     data: Vec<u8>,
 }
 
+impl IpsCommonOperations for IPSReader {}
+
 impl IPSReader {
+    const IPS_HEADER: &'static str = "PATCH";
+    const IPS_EOF: &'static str = "EOF";
+    const MAX_PATCH_SIZE: u64 = 7_340_032;
+
     pub fn new(path: &Path) -> Self {
         let data = match File::open(path) {
             Ok(mut f) => {
-                let mut buf: Vec<u8> = vec![];
+                <Self as IpsCommonOperations>::check_file_size(&f, Self::MAX_PATCH_SIZE);
+                let mut buf: Vec<u8> = Vec::new();
                 let _ = f.read_to_end(&mut buf);
+                println!("Read {} bytes.", buf.len());
                 buf
             }
             Err(err) => panic!("Failed to open file containing patch. {err}"),
@@ -27,12 +45,12 @@ impl IPSReader {
     }
 
     pub fn read_patch(&mut self) -> Vec<IPSRecordKind> {
-        self.read_sequence(0, IPS_HEADER);
-        self.read_sequence(self.data.len() - 3, IPS_EOF);
+        self.read_sequence(0, Self::IPS_HEADER);
+        self.read_sequence(self.data.len() - 3, Self::IPS_EOF);
         let mut records = Vec::new();
 
         while let Some(record) = self.read_ips_record() {
-            println!("Found {}", record);
+            println!("Found {record}");
             records.push(record);
         }
 
@@ -73,7 +91,7 @@ impl IPSReader {
                 buf
             };
 
-            Some(IPSRecordKind::Record { offset, size, data })
+            Some(IPSRecordKind::Record { offset, data })
         } else {
             None
         }
@@ -96,44 +114,125 @@ impl IPSReader {
 
     fn read_two_bytes(&mut self) -> u16 {
         let bytes: Vec<_> = self.data.drain(0..2).collect();
-        ((bytes[0] as u16) << 8) | bytes[1] as u16
+        (u16::from(bytes[0]) << 8) | u16::from(bytes[1])
     }
 
     fn read_three_bytes(&mut self) -> u32 {
         let bytes: Vec<_> = self.data.drain(0..3).collect();
-        ((bytes[0] as u32) << 16) | ((bytes[1] as u32) << 8) | bytes[2] as u32
+        (u32::from(bytes[0]) << 16) | (u32::from(bytes[1]) << 8) | u32::from(bytes[2])
     }
 }
 
 pub struct IPSWriter {
-    rom: File,
-    patch_filename: String,
-    patch: Vec<IPSRecordKind>,
+    rom: PathBuf,
+    patch: IPSPatch,
 }
 
+impl IpsCommonOperations for IPSWriter {}
+
 impl IPSWriter {
-    pub fn new(rom: PathBuf, patch_path: PathBuf, patch: Vec<IPSRecordKind>) -> Self {
-        Self {
-            rom: File::open(rom).expect("Could not open ROM {rom}."),
-            patch_filename: patch_path
-                .file_name()
-                .expect("Failed to get file name of patch {patch_path}.")
-                .to_str()
-                .expect("Failed to convert {patch_path} to a String.")
-                .to_string(),
-            patch,
-        }
+    const MAX_ROM_SIZE: u64 = 2_147_483_648;
+    const IPS_FILE_EXT: &'static str = "ips";
+
+    pub const fn new(rom: PathBuf, patch: IPSPatch) -> Self {
+        Self { rom, patch }
     }
 
     pub fn write_patch(&mut self) {
-        unimplemented!()
+        let patched_rom = self.copy_rom();
+
+        self.patch.data.iter().for_each(|record| {
+            Self::write_record(record, &patched_rom);
+        });
+    }
+
+    fn write_record(record: &IPSRecordKind, patched_rom: &File) {
+        match record {
+            IPSRecordKind::Record { offset, data } => {
+                match patched_rom.write_at(data, u64::from(*offset)) {
+                    Ok(bytes) => println!("Wrote {bytes} bytes starting at offset {offset:#x}."),
+                    Err(e) => eprintln!("Error writing record at offset {offset:#x}: {e}"),
+                }
+            }
+            IPSRecordKind::RLERecord {
+                offset,
+                rle_size,
+                rle_value,
+            } => {
+                let mut rle_value_buf: Vec<u8> = Vec::with_capacity(*rle_size as usize);
+
+                for _ in 0..*rle_size {
+                    rle_value_buf.push(*rle_value);
+                }
+
+                match patched_rom.write_at(&rle_value_buf, u64::from(*offset)) {
+                    Ok(bytes) => {
+                        println!("Wrote {bytes} bytes of value {rle_value:#x} starting at offset {offset:#x}.");
+                    }
+                    Err(e) => {
+                        eprintln!("Error writing RLE record at offset {offset:#x}: {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    fn copy_rom(&self) -> File {
+        let destination_path = self.make_destination_path();
+
+        match fs::copy(&self.rom, &destination_path) {
+            Ok(_) => {
+                let f = File::options()
+                    .read(true)
+                    .write(true)
+                    .open(&destination_path)
+                    .expect("Error opening copy of ROM before patching.");
+                <Self as IpsCommonOperations>::check_file_size(&f, Self::MAX_ROM_SIZE);
+                f
+            }
+            Err(e) => panic!(
+                "Error copying {} to {}: {e}",
+                self.rom.to_str().unwrap(),
+                destination_path.to_str().unwrap()
+            ),
+        }
+    }
+
+    fn make_destination_path(&self) -> PathBuf {
+        let path = self.rom.to_str().map(ToString::to_string).unwrap();
+        let rom_file_ext = path
+            .get(path.rfind('.').expect("ROM should have a file extension.") + 1..path.len())
+            .unwrap();
+
+        PathBuf::from(
+            path.replace(
+                path.get(
+                    path.rfind(path::MAIN_SEPARATOR)
+                        .expect("Didn't find a separator in path.")
+                        + 1..path.len(),
+                )
+                .unwrap(),
+                &self.patch.name,
+            )
+            .replace(Self::IPS_FILE_EXT, rom_file_ext),
+        )
+    }
+}
+
+pub struct IPSPatch {
+    name: String,
+    data: Vec<IPSRecordKind>,
+}
+
+impl IPSPatch {
+    pub const fn new(name: String, data: Vec<IPSRecordKind>) -> Self {
+        Self { name, data }
     }
 }
 
 pub enum IPSRecordKind {
     Record {
         offset: u32,
-        size: u16,
         data: Vec<u8>,
     },
     RLERecord {
@@ -146,12 +245,8 @@ pub enum IPSRecordKind {
 impl Display for IPSRecordKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Record {
-                offset,
-                size,
-                data: _,
-            } => {
-                write!(f, "Record {{ offset: {:#x}, size: {} }}", offset, size)
+            Self::Record { offset, data } => {
+                write!(f, "Record {{ offset: {offset:#x}, size: {} }}", data.len())
             }
             Self::RLERecord {
                 offset,
@@ -159,8 +254,7 @@ impl Display for IPSRecordKind {
                 rle_value,
             } => write!(
                 f,
-                "RLERecord {{ offset: {:#x}, rle_size: {}, rle_value: {} }}",
-                offset, rle_size, rle_value
+                "RLERecord {{ offset: {offset:#x}, rle_size: {rle_size}, rle_value: {rle_value} }}"
             ),
         }
     }
@@ -175,13 +269,16 @@ mod tests {
     const HEADER: &[u8] = &[0x50, 0x41, 0x54, 0x43, 0x48];
     const INCORRECT_HEADER: &[u8] = &[0x51, 0x42, 0x55, 0x44, 0x49];
     const RECORD: &[u8] = &[0x0, 0x1, 0xff, 0x0, 0x1, 0x1];
+    const RLE_RECORD: &[u8] = &[0x0, 0x0, 0x0, 0x0, 0x0, 0xf, 0xf, 0x1];
     const EOF: &[u8] = &[0x45, 0x4f, 0x46];
     const INCORRECT_EOF: &[u8] = &[0x46, 0x50, 0x47];
 
     #[test]
     fn has_correct_header() {
+        let patch = make_correct_patch();
+
         assert!(std::panic::catch_unwind(|| {
-            let mut reader = write_patch_file(make_correct_patch());
+            let mut reader = write_patch_file(&patch);
             reader.read_patch()
         })
         .is_ok());
@@ -189,8 +286,10 @@ mod tests {
 
     #[test]
     fn fails_on_incorrect_header() {
+        let patch = make_patch_incorrect_header();
+
         assert!(std::panic::catch_unwind(|| {
-            let mut reader = write_patch_file(make_patch_incorrect_header());
+            let mut reader = write_patch_file(&patch);
             reader.read_patch()
         })
         .is_err());
@@ -198,8 +297,10 @@ mod tests {
 
     #[test]
     fn fails_on_incorrect_eof() {
+        let patch = make_patch_incorrect_eof();
+
         assert!(std::panic::catch_unwind(|| {
-            let mut reader = write_patch_file(make_patch_incorrect_eof());
+            let mut reader = write_patch_file(&patch);
             reader.read_patch()
         })
         .is_err());
@@ -207,29 +308,22 @@ mod tests {
 
     #[test]
     fn records_do_not_contain_eof() {
-        let mut reader = write_patch_file(make_correct_patch());
+        let patch = make_correct_patch();
+        let mut reader = write_patch_file(&patch);
         let patch = reader.read_patch();
-        assert!(patch
-            .iter()
-            .filter(|record| match record {
-                IPSRecordKind::Record {
-                    offset: _,
-                    size: _,
-                    data,
-                } => data.ends_with(EOF),
-                IPSRecordKind::RLERecord {
-                    offset: _,
-                    rle_size: _,
-                    rle_value: _,
-                } => false,
-            })
-            .collect::<Vec<_>>()
-            .is_empty());
+        assert!(!patch.iter().any(|record| match record {
+            IPSRecordKind::Record { offset: _, data } => data.ends_with(EOF),
+            IPSRecordKind::RLERecord {
+                offset: _,
+                rle_size: _,
+                rle_value: _,
+            } => false,
+        }));
     }
 
-    fn write_patch_file(data: Vec<u8>) -> IPSReader {
+    fn write_patch_file(data: &[u8]) -> IPSReader {
         let mut file = tempfile::Builder::new().suffix(".ips").tempfile().unwrap();
-        let _ = file.write(&data);
+        let _ = file.write(data);
         IPSReader::new(file.path())
     }
 
@@ -247,19 +341,14 @@ mod tests {
 
     fn make_patch_data(header: Option<&[u8]>, eof: Option<&[u8]>) -> Vec<u8> {
         let mut patch = Vec::new();
-        patch.extend_from_slice(match header {
-            Some(h) => h,
-            None => INCORRECT_HEADER,
-        });
+        patch.extend_from_slice(header.map_or(INCORRECT_HEADER, |h| h));
 
         for _ in 0..3 {
-            patch.extend_from_slice(RECORD)
+            patch.extend_from_slice(RECORD);
+            patch.extend_from_slice(RLE_RECORD);
         }
 
-        patch.extend_from_slice(match eof {
-            Some(e) => e,
-            None => INCORRECT_EOF,
-        });
+        patch.extend_from_slice(eof.map_or(INCORRECT_EOF, |e| e));
 
         patch
     }

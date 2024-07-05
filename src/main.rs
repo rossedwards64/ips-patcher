@@ -3,6 +3,7 @@ mod ips;
 use std::path::PathBuf;
 
 use clap::{arg, command, value_parser, ArgMatches};
+use ips::IPSPatch;
 
 fn main() {
     let matches = parse_args();
@@ -11,19 +12,26 @@ fn main() {
     let patch_path = get_matched_path("patch", &matches);
     let patch = {
         let mut reader = ips::IPSReader::new(&patch_path);
-        reader.read_patch()
+        IPSPatch::new(
+            patch_path
+                .file_name()
+                .and_then(|s| s.to_str().map(ToString::to_string))
+                .unwrap(),
+            reader.read_patch(),
+        )
     };
 
-    let writer = ips::IPSWriter::new(rom_path, patch_path, patch);
+    ips::IPSWriter::new(rom_path, patch).write_patch();
 }
 
 fn get_matched_path(id: &str, matches: &ArgMatches) -> PathBuf {
-    match matches.get_one::<PathBuf>(id) {
-        Some(path) => path.to_path_buf(),
-        None => panic!("Couldn't find path with ID: {id}"),
-    }
+    matches.get_one(id).map_or_else(
+        || panic!("Couldn't find path with ID: {id}"),
+        std::clone::Clone::clone,
+    )
 }
 
+#[allow(clippy::cognitive_complexity)]
 fn parse_args() -> ArgMatches {
     command!()
         .arg(
