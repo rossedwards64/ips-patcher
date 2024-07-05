@@ -1,9 +1,9 @@
-mod ips;
+mod patchers;
 
 use std::path::PathBuf;
 
 use clap::{arg, command, value_parser, ArgMatches};
-use ips::IPSPatch;
+use patchers::ips::{IPSPatch, IPSReader, IPSWriter};
 
 fn main() {
     let matches = parse_args();
@@ -11,7 +11,7 @@ fn main() {
     let rom_path = get_matched_path("rom", &matches);
     let patch_path = get_matched_path("patch", &matches);
     let patch = {
-        let mut reader = ips::IPSReader::new(&patch_path);
+        let mut reader = IPSReader::new(&patch_path);
         IPSPatch::new(
             patch_path
                 .file_name()
@@ -21,7 +21,7 @@ fn main() {
         )
     };
 
-    ips::IPSWriter::new(rom_path, patch).write_patch();
+    IPSWriter::new(rom_path, patch).write_patch();
 }
 
 fn get_matched_path(id: &str, matches: &ArgMatches) -> PathBuf {

@@ -1,28 +1,18 @@
+use super::common::GenericPatch;
+
 use std::{
     fmt::Display,
     fs::{self, File},
-    io::{Read, Seek, SeekFrom},
+    io::Read,
     os::unix::fs::FileExt,
     path::{self, Path, PathBuf},
 };
-
-trait IpsCommonOperations {
-    fn check_file_size(mut f: &File, max_size: u64) {
-        if f.seek(SeekFrom::End(0))
-            .is_ok_and(|filesize| filesize >= max_size)
-        {
-            panic!("Patch must be smaller than {max_size}.")
-        } else {
-            let _ = f.seek(SeekFrom::Start(0));
-        }
-    }
-}
 
 pub struct IPSReader {
     data: Vec<u8>,
 }
 
-impl IpsCommonOperations for IPSReader {}
+impl GenericPatch for IPSReader {}
 
 impl IPSReader {
     const IPS_HEADER: &'static str = "PATCH";
@@ -32,7 +22,7 @@ impl IPSReader {
     pub fn new(path: &Path) -> Self {
         let data = match File::open(path) {
             Ok(mut f) => {
-                <Self as IpsCommonOperations>::check_file_size(&f, Self::MAX_PATCH_SIZE);
+                <Self as GenericPatch>::check_file_size(&f, Self::MAX_PATCH_SIZE);
                 let mut buf: Vec<u8> = Vec::new();
                 let _ = f.read_to_end(&mut buf);
                 println!("Read {} bytes.", buf.len());
@@ -128,7 +118,7 @@ pub struct IPSWriter {
     patch: IPSPatch,
 }
 
-impl IpsCommonOperations for IPSWriter {}
+impl GenericPatch for IPSWriter {}
 
 impl IPSWriter {
     const MAX_ROM_SIZE: u64 = 2_147_483_648;
@@ -187,7 +177,7 @@ impl IPSWriter {
                     .write(true)
                     .open(&destination_path)
                     .expect("Error opening copy of ROM before patching.");
-                <Self as IpsCommonOperations>::check_file_size(&f, Self::MAX_ROM_SIZE);
+                <Self as GenericPatch>::check_file_size(&f, Self::MAX_ROM_SIZE);
                 f
             }
             Err(e) => panic!(
