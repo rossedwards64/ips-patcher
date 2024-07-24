@@ -1,28 +1,38 @@
-use super::common::GenericPatch;
+use super::common::{GenericPatch, GenericPatchReader, GenericPatchWriter};
 
 use std::{
     fmt::Display,
     fs::{self, File},
-    io::Read,
+    io::{Read, Seek, SeekFrom},
     os::unix::fs::FileExt,
-    path::{self, Path, PathBuf},
+    path::{Path, PathBuf},
 };
+
+trait IPSOperator {
+    fn check_file_size(mut f: &File, max_size: u64) {
+        if f.seek(SeekFrom::End(0))
+            .is_ok_and(|filesize| filesize >= max_size)
+        {
+            panic!("Patch must be smaller than {max_size}.")
+        } else {
+            let _ = f.seek(SeekFrom::Start(0));
+        }
+    }
+}
 
 pub struct IPSReader {
     data: Vec<u8>,
 }
 
-impl GenericPatch for IPSReader {}
+impl IPSOperator for IPSReader {}
 
-impl IPSReader {
-    const IPS_HEADER: &'static str = "PATCH";
-    const IPS_EOF: &'static str = "EOF";
-    const MAX_PATCH_SIZE: u64 = 7_340_032;
+impl GenericPatchReader for IPSReader {
+    type Patch = Vec<IPSRecordKind>;
 
-    pub fn new(path: &Path) -> Self {
+    fn new(path: &Path) -> Self {
         let data = match File::open(path) {
             Ok(mut f) => {
-                <Self as GenericPatch>::check_file_size(&f, Self::MAX_PATCH_SIZE);
+                <Self as IPSOperator>::check_file_size(&f, Self::MAX_PATCH_SIZE);
                 let mut buf: Vec<u8> = Vec::new();
                 let _ = f.read_to_end(&mut buf);
                 println!("Read {} bytes.", buf.len());
@@ -34,7 +44,7 @@ impl IPSReader {
         Self { data }
     }
 
-    pub fn read_patch(&mut self) -> Vec<IPSRecordKind> {
+    fn read_patch(&mut self) -> Vec<IPSRecordKind> {
         self.read_sequence(0, Self::IPS_HEADER);
         self.read_sequence(self.data.len() - 3, Self::IPS_EOF);
         let mut records = Vec::new();
@@ -46,6 +56,16 @@ impl IPSReader {
 
         records
     }
+
+    fn data(&mut self) -> &mut Vec<u8> {
+        &mut self.data
+    }
+}
+
+impl IPSReader {
+    const IPS_HEADER: &'static str = "PATCH";
+    const IPS_EOF: &'static str = "EOF";
+    const MAX_PATCH_SIZE: u64 = 7_340_032;
 
     fn read_ips_record(&mut self) -> Option<IPSRecordKind> {
         if self.data.len() < 8 {
@@ -87,21 +107,6 @@ impl IPSReader {
         }
     }
 
-    fn read_sequence(&mut self, offset: usize, expected: &str) -> Vec<u8> {
-        let sequence = self
-            .data
-            .drain(offset..offset + expected.len())
-            .collect::<Vec<u8>>();
-
-        if sequence != expected.as_bytes() {
-            if let Ok(sequence_str) = std::str::from_utf8(&sequence) {
-                panic!("Sequence \"{expected}\" was not found. Instead found \"{sequence_str}\".");
-            }
-        }
-
-        sequence
-    }
-
     fn read_two_bytes(&mut self) -> u16 {
         let bytes: Vec<_> = self.data.drain(0..2).collect();
         (u16::from(bytes[0]) << 8) | u16::from(bytes[1])
@@ -114,27 +119,15 @@ impl IPSReader {
 }
 
 pub struct IPSWriter {
-    rom: PathBuf,
+    source: PathBuf,
     patch: IPSPatch,
 }
 
-impl GenericPatch for IPSWriter {}
+impl IPSOperator for IPSWriter {}
 
 impl IPSWriter {
     const MAX_ROM_SIZE: u64 = 2_147_483_648;
     const IPS_FILE_EXT: &'static str = "ips";
-
-    pub const fn new(rom: PathBuf, patch: IPSPatch) -> Self {
-        Self { rom, patch }
-    }
-
-    pub fn write_patch(&mut self) {
-        let patched_rom = self.copy_rom();
-
-        self.patch.data.iter().for_each(|record| {
-            Self::write_record(record, &patched_rom);
-        });
-    }
 
     fn write_record(record: &IPSRecordKind, patched_rom: &File) {
         match record {
@@ -168,50 +161,64 @@ impl IPSWriter {
     }
 
     fn copy_rom(&self) -> File {
-        let destination_path = self.make_destination_path();
+        let target_path = self.make_target_path();
 
-        match fs::copy(&self.rom, &destination_path) {
+        match fs::copy(&self.source, &target_path) {
             Ok(_) => {
                 let f = File::options()
                     .read(true)
                     .write(true)
-                    .open(&destination_path)
+                    .open(&target_path)
                     .expect("Error opening copy of ROM before patching.");
-                <Self as GenericPatch>::check_file_size(&f, Self::MAX_ROM_SIZE);
+                <Self as IPSOperator>::check_file_size(&f, Self::MAX_ROM_SIZE);
                 f
             }
             Err(e) => panic!(
                 "Error copying {} to {}: {e}",
-                self.rom.to_str().unwrap(),
-                destination_path.to_str().unwrap()
+                self.source.to_str().unwrap(),
+                target_path.to_str().unwrap()
             ),
         }
     }
+}
 
-    fn make_destination_path(&self) -> PathBuf {
-        let path = self.rom.to_str().map(ToString::to_string).unwrap();
-        let rom_file_ext = path
-            .get(path.rfind('.').expect("ROM should have a file extension.") + 1..path.len())
-            .unwrap();
+impl GenericPatchWriter for IPSWriter {
+    type Patch = IPSPatch;
 
-        PathBuf::from(
-            path.replace(
-                path.get(
-                    path.rfind(path::MAIN_SEPARATOR)
-                        .expect("Didn't find a separator in path.")
-                        + 1..path.len(),
-                )
-                .unwrap(),
-                &self.patch.name,
-            )
-            .replace(Self::IPS_FILE_EXT, rom_file_ext),
-        )
+    fn new(source: PathBuf, patch: IPSPatch) -> Self {
+        Self { source, patch }
+    }
+
+    fn write_patch(&mut self) {
+        let target = self.copy_rom();
+
+        self.patch.data.iter().for_each(|record| {
+            Self::write_record(record, &target);
+        });
+    }
+
+    fn source(&self) -> &Path {
+        &self.source
+    }
+
+    fn patch(&self) -> &Self::Patch {
+        &self.patch
+    }
+
+    fn file_ext() -> &'static str {
+        Self::IPS_FILE_EXT
     }
 }
 
 pub struct IPSPatch {
     name: String,
     data: Vec<IPSRecordKind>,
+}
+
+impl GenericPatch for IPSPatch {
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 impl IPSPatch {
