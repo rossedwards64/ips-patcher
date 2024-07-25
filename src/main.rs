@@ -1,6 +1,6 @@
 mod patchers;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{arg, command, value_parser, ArgMatches};
 
@@ -16,28 +16,19 @@ fn main() {
     let rom_path = get_matched_path("rom", &matches);
     let patch_path = get_matched_path("patch", &matches);
 
-    if patch_path
-        .extension()
-        .map(|ext| ext == "ips")
-        .unwrap_or(false)
-    {
+    if check_file_extension(&patch_path, "ips") {
         let patch = {
-            let mut reader = IPSReader::new(&patch_path);
-            IPSPatch::new(
-                patch_path
-                    .file_name()
-                    .and_then(|s| s.to_str().map(ToString::to_string))
-                    .unwrap(),
-                reader.read_patch(),
-            )
+            let records = IPSReader::new(&patch_path).read_patch();
+            let patch_name = patch_path
+                .file_name()
+                .and_then(|s| s.to_str().map(ToString::to_string))
+                .unwrap();
+
+            IPSPatch::new(patch_name, records)
         };
 
         IPSWriter::new(rom_path, patch).write_patch();
-    } else if patch_path
-        .extension()
-        .map(|ext| ext == "bps")
-        .unwrap_or(false)
-    {
+    } else if check_file_extension(&patch_path, "bps") {
         let patch = BPSReader::new(&patch_path).read_patch();
         BPSWriter::new(rom_path, patch).write_patch();
     } else {
@@ -46,6 +37,10 @@ fn main() {
             patch_path.to_str().unwrap()
         );
     }
+}
+
+fn check_file_extension(path: &Path, ext: &str) -> bool {
+    path.extension().map(|ext2| ext == ext2).unwrap_or(false)
 }
 
 fn get_matched_path(id: &str, matches: &ArgMatches) -> PathBuf {

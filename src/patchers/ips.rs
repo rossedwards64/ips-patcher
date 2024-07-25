@@ -35,7 +35,6 @@ impl GenericPatchReader for IPSReader {
                 <Self as IPSOperator>::check_file_size(&f, Self::MAX_PATCH_SIZE);
                 let mut buf: Vec<u8> = Vec::new();
                 let _ = f.read_to_end(&mut buf);
-                println!("Read {} bytes.", buf.len());
                 buf
             }
             Err(err) => panic!("Failed to open file containing patch. {err}"),
@@ -50,7 +49,6 @@ impl GenericPatchReader for IPSReader {
         let mut records = Vec::new();
 
         while let Some(record) = self.read_ips_record() {
-            println!("Found {record}");
             records.push(record);
         }
 
@@ -133,7 +131,7 @@ impl IPSWriter {
         match record {
             IPSRecordKind::Record { offset, data } => {
                 match patched_rom.write_at(data, u64::from(*offset)) {
-                    Ok(bytes) => println!("Wrote {bytes} bytes starting at offset {offset:#x}."),
+                    Ok(_) => (),
                     Err(e) => eprintln!("Error writing record at offset {offset:#x}: {e}"),
                 }
             }
@@ -149,9 +147,7 @@ impl IPSWriter {
                 }
 
                 match patched_rom.write_at(&rle_value_buf, u64::from(*offset)) {
-                    Ok(bytes) => {
-                        println!("Wrote {bytes} bytes of value {rle_value:#x} starting at offset {offset:#x}.");
-                    }
+                    Ok(_) => (),
                     Err(e) => {
                         eprintln!("Error writing RLE record at offset {offset:#x}: {e}");
                     }
