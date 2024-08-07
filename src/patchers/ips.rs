@@ -49,9 +49,12 @@ impl GenericPatchReader for IPSReader {
         let mut records = Vec::new();
 
         while let Some(record) = self.read_ips_record() {
+            #[cfg(debug_assertions)]
+            println!("Found {record}");
             records.push(record);
         }
 
+        println!("Read {} records from patch.", records.len());
         records
     }
 
@@ -131,7 +134,10 @@ impl IPSWriter {
         match record {
             IPSRecordKind::Record { offset, data } => {
                 match patched_rom.write_at(data, u64::from(*offset)) {
-                    Ok(_) => (),
+                    Ok(bytes) => {
+                        #[cfg(debug_assertions)]
+                        println!("Wrote {bytes} bytes starting at offset {offset:#x}.")
+                    }
                     Err(e) => eprintln!("Error writing record at offset {offset:#x}: {e}"),
                 }
             }
@@ -147,7 +153,10 @@ impl IPSWriter {
                 }
 
                 match patched_rom.write_at(&rle_value_buf, u64::from(*offset)) {
-                    Ok(_) => (),
+                    Ok(bytes) => {
+                        #[cfg(debug_assertions)]
+                        println!("Wrote {bytes} bytes of value {rle_value:#x} starting at offset {offset:#x}.");
+                    }
                     Err(e) => {
                         eprintln!("Error writing RLE record at offset {offset:#x}: {e}");
                     }
