@@ -86,7 +86,7 @@ impl IPSReader {
                 }
             };
 
-            let rle_value = self.data.remove(0);
+            let rle_value = self.pop_byte();
 
             Some(IPSRecordKind::RLERecord {
                 offset,
@@ -136,7 +136,7 @@ impl IPSWriter {
                 match patched_rom.write_at(data, u64::from(*offset)) {
                     Ok(bytes) => {
                         #[cfg(debug_assertions)]
-                        println!("Wrote {bytes} bytes starting at offset {offset:#x}.")
+                        println!("Wrote {bytes} bytes starting at offset {offset:#x}.");
                     }
                     Err(e) => eprintln!("Error writing record at offset {offset:#x}: {e}"),
                 }

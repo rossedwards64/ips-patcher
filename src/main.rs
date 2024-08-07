@@ -39,8 +39,8 @@ fn main() {
     }
 }
 
-fn check_file_extension(path: &Path, ext: &str) -> bool {
-    path.extension().map(|ext2| ext == ext2).unwrap_or(false)
+fn check_file_extension(path: &Path, expected: &str) -> bool {
+    path.extension().is_some_and(|actual| expected == actual)
 }
 
 fn get_matched_path(id: &str, matches: &ArgMatches) -> PathBuf {

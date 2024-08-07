@@ -79,7 +79,7 @@ impl BPSReader {
         let mut shift: u64 = 1;
 
         loop {
-            let x = self.data.remove(0);
+            let x = self.pop_byte();
             println!("Data: {x:#x}, Shift: {shift}");
             result += u64::from(x & 0x7f) * shift;
 

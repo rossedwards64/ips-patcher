@@ -11,6 +11,10 @@ pub trait GenericPatchReader {
     fn read_patch(&mut self) -> Self::Patch;
     fn data(&mut self) -> &mut Vec<u8>;
 
+    fn pop_byte(&mut self) -> u8 {
+        self.data().remove(0)
+    }
+
     fn read_sequence(&mut self, offset: usize, expected: &str) -> Vec<u8> {
         let sequence = self
             .data()
